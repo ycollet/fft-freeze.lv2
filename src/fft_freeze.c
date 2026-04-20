@@ -88,7 +88,7 @@ static void map_uris(FFTFreeze* self)
 static void make_window(FFTFreeze* self)
 {
   for (uint32_t n = 0; n < self->fft_size; ++n)
-    self->window[n] = 0.5 - 0.5 * cos((2.0 * M_PI * n) / (double)(self->fft_size - 1));
+    self->window[n] = 0.5 - 0.5 * cos((2.0 * M_PI * n) / (double)self->fft_size);
 }
 
 static void realloc_fft(FFTFreeze* self, uint32_t new_size)
@@ -234,7 +234,7 @@ static void generate_ola_frame(FFTFreeze* self)
 
   // Apply synthesis window and overlap-add
   for (uint32_t i = 0; i < self->fft_size; ++i) {
-    double sample = self->fft_out[i] * invN * self->window[i];
+    double sample = self->fft_out[i] * invN;
     uint32_t pos  = (self->ola_read_pos + i) % self->fft_size;
     self->ola_buf[pos] += sample;
   }
