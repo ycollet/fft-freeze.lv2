@@ -65,8 +65,9 @@ typedef struct {
   double* window;
 
   // Frozen spectrum
-  double* mags;   // magnitudes  (fft_size/2 + 1)
-  double* phases; // synthesis phases, advanced each hop
+  double* mags;     // magnitudes       (fft_size/2 + 1)
+  double* phases;   // synthesis phases, advanced each hop
+  double* true_inc; // true phase increment per hop, per bin (estimated from signal)
 
   // Overlap-add output
   double*  ola_buf;      // circular OLA accumulation (fft_size)
@@ -100,6 +101,7 @@ static void realloc_fft(FFTFreeze* self, uint32_t new_size)
   free(self->window);
   free(self->mags);
   free(self->phases);
+  free(self->true_inc);
   free(self->input_ring);
   free(self->ola_buf);
   fftw_free(self->spec);
@@ -112,7 +114,9 @@ static void realloc_fft(FFTFreeze* self, uint32_t new_size)
   self->window     = (double*)calloc(self->fft_size,         sizeof(double));
   self->mags       = (double*)calloc(self->fft_size/2 + 1,   sizeof(double));
   self->phases     = (double*)calloc(self->fft_size/2 + 1,   sizeof(double));
-  self->input_ring = (double*)calloc(self->fft_size,         sizeof(double));
+  self->true_inc   = (double*)calloc(self->fft_size/2 + 1,   sizeof(double));
+  // Ring buffer holds 2×fft_size samples so capture_freeze can access the previous hop
+  self->input_ring = (double*)calloc(self->fft_size * 2,     sizeof(double));
   self->ola_buf    = (double*)calloc(self->fft_size,         sizeof(double));
   self->spec       = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * (self->fft_size/2 + 1));
 
@@ -187,26 +191,52 @@ static inline bool is_cc_freeze(const uint8_t* msg, uint8_t cc_num)
 static void capture_freeze(FFTFreeze* self)
 {
   const bool spectral = self->param_spectral_mode && (*self->param_spectral_mode >= 0.5f);
+  const uint32_t K         = self->fft_size / 2 + 1;
+  const uint32_t ring_size = self->fft_size * 2;
 
-  // Copy ring buffer in chronological order with Hann window applied
+  // --- Current frame: most recent fft_size samples ---
   for (uint32_t i = 0; i < self->fft_size; ++i) {
-    uint32_t idx = (self->ring_pos + i) % self->fft_size;
+    uint32_t idx = (self->ring_pos + i) % ring_size;
     self->time_buf[i] = self->input_ring[idx] * self->window[i];
   }
-
-  // Forward FFT
   fftw_execute(self->plan_fwd);
 
   // Store magnitudes and initial synthesis phases
-  const uint32_t K = self->fft_size / 2 + 1;
   for (uint32_t k = 0; k < K; ++k) {
     double re = self->spec[k][0];
     double im = self->spec[k][1];
-    self->mags[k] = hypot(re, im);
-    if (spectral)
-      self->phases[k] = ((double)rand() / RAND_MAX) * 2.0 * M_PI; // random initial phase
-    else
-      self->phases[k] = atan2(im, re); // preserve actual phase
+    self->mags[k]   = hypot(re, im);
+    self->phases[k] = spectral ? ((double)rand() / RAND_MAX) * 2.0 * M_PI
+                               : atan2(im, re);
+  }
+
+  // --- Estimate true phase increment per bin ---
+  // For spectral mode the phase texture is intentionally random; nominal is fine.
+  // For normal mode, we compare current phases against the frame one hop earlier
+  // to compute the actual instantaneous frequency at each bin.  This eliminates
+  // pulsation caused by off-bin-centre components advancing at the wrong rate.
+  const double nominal_per_k = 2.0 * M_PI * (double)self->hop_size / (double)self->fft_size;
+
+  if (spectral) {
+    for (uint32_t k = 0; k < K; ++k)
+      self->true_inc[k] = (double)k * nominal_per_k;
+  } else {
+    // Previous frame: same window applied to samples shifted back by one hop
+    for (uint32_t i = 0; i < self->fft_size; ++i) {
+      uint32_t idx = (self->ring_pos + i + ring_size - self->hop_size) % ring_size;
+      self->time_buf[i] = self->input_ring[idx] * self->window[i];
+    }
+    fftw_execute(self->plan_fwd); // spec now holds the previous frame
+
+    for (uint32_t k = 0; k < K; ++k) {
+      double phi_old = atan2(self->spec[k][1], self->spec[k][0]);
+      double nominal = (double)k * nominal_per_k;
+      // Unwrap the phase difference to the principal determination near the nominal
+      double dev = self->phases[k] - phi_old - nominal;
+      dev -= 2.0 * M_PI * round(dev / (2.0 * M_PI));
+      // Fall back to nominal for near-silence bins where phase is unreliable
+      self->true_inc[k] = (self->mags[k] > 1e-10) ? nominal + dev : nominal;
+    }
   }
 
   // Reset OLA state
@@ -219,13 +249,11 @@ static void capture_freeze(FFTFreeze* self)
 /* Generate one OLA frame: advance phases, IFFT, window, overlap-add into ola_buf. */
 static void generate_ola_frame(FFTFreeze* self)
 {
-  const uint32_t K     = self->fft_size / 2 + 1;
-  const double   invN  = 1.0 / (double)self->fft_size;
-  // Natural phase advancement per hop for bin k:  k * 2π * hop_size / fft_size
-  const double   phi_inc_per_k = 2.0 * M_PI * (double)self->hop_size / (double)self->fft_size;
+  const uint32_t K    = self->fft_size / 2 + 1;
+  const double   invN = 1.0 / (double)self->fft_size;
 
   for (uint32_t k = 0; k < K; ++k) {
-    self->phases[k] += (double)k * phi_inc_per_k;
+    self->phases[k] += self->true_inc[k];  // true instantaneous frequency increment
     self->spec[k][0] = self->mags[k] * cos(self->phases[k]);
     self->spec[k][1] = self->mags[k] * sin(self->phases[k]);
   }
@@ -278,7 +306,7 @@ static void run(LV2_Handle instance, uint32_t n_samples)
   if (self->in_l) {
     for (uint32_t i = 0; i < n_samples; ++i) {
       self->input_ring[self->ring_pos] = (double)self->in_l[i];
-      self->ring_pos = (self->ring_pos + 1) % self->fft_size;
+      self->ring_pos = (self->ring_pos + 1) % (self->fft_size * 2);
     }
   }
 
@@ -319,6 +347,7 @@ static void cleanup(LV2_Handle instance)
   free(self->window);
   free(self->mags);
   free(self->phases);
+  free(self->true_inc);
   free(self->input_ring);
   free(self->ola_buf);
   free(self);
