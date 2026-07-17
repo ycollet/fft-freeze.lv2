@@ -186,6 +186,9 @@ static LV2_Handle instantiate(const LV2_Descriptor*     descriptor,
                               const char*               bundle_path,
                               const LV2_Feature* const* features)
 {
+  (void)descriptor;
+  (void)bundle_path;
+
   FFTFreeze* self = (FFTFreeze*)calloc(1, sizeof(FFTFreeze));
   if (!self) return NULL;
 

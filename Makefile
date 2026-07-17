@@ -13,12 +13,10 @@ $(BUNDLE):
 
 $(BUNDLE)/$(PLUGIN_URI).so: $(BUNDLE) src/fft_freeze.c
 	$(CC) $(CFLAGS) -o $@ src/fft_freeze.c $(LDFLAGS)
-	cp manifest.ttl $(BUNDLE)/
-	cp fft-freeze.ttl $(BUNDLE)/
 
 install: all
 	mkdir -p $(PREFIX)/$(BUNDLE)
 	cp -r $(BUNDLE)/* $(PREFIX)/$(BUNDLE)/
 
 clean:
-	rm -rf $(BUNDLE)
+	rm -f $(BUNDLE)/$(PLUGIN_URI).so
