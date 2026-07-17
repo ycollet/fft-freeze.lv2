@@ -1,4 +1,5 @@
-@prefix lv2:   <http://lv2plug.in/ns/lv2#> .
+@prefix doap:  <http://usefulinc.com/ns/doap#> .
+@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
 @prefix atom:  <http://lv2plug.in/ns/ext/atom#> .
 @prefix midi:  <http://lv2plug.in/ns/ext/midi#> .
 @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
@@ -6,6 +7,7 @@
 
 <https://example.org/plugins/fft-freeze>
   a lv2:Plugin , lv2:UtilityPlugin ;
+  doap:name "FFT Freeze" ;
   rdfs:label "FFT Freeze (squelette)" ;
   lv2:requiredFeature <http://lv2plug.in/ns/ext/urid#map> ;
   lv2:optionalFeature lv2:hardRTCapable ;
