@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: ISC
 // Plugin LV2 "FFT Freeze" — C + FFTW3
 // URI du plugin : https://example.org/plugins/fft-freeze
+//
+// Phase-vocoder freeze: capture_freeze() takes one magnitude/phase snapshot
+// of the input when triggered, then run()/generate_ola_frame() resynthesize
+// it forever by advancing each bin's phase at its own estimated frequency
+// and overlap-adding the resulting frames — the input is never read again
+// until the next freeze.
 
 #include <math.h>
 #include <stdbool.h>
@@ -87,7 +93,10 @@ typedef struct {
   double* true_inc;  // true phase increment per hop, per bin (estimated from signal)
   double* jitter;    // slow per-bin random-walk added to true_inc each hop
 
-  // Overlap-add output
+  // Overlap-add output. A new frame is generated exactly when hop_counter
+  // wraps to 0, written starting at the current ola_read_pos — so each
+  // successive frame lands hop_size further around the circular buffer
+  // than the last, which is what makes the overlap-add tile correctly.
   double*  ola_buf;      // circular OLA accumulation (fft_size)
   double   synth_norm;   // analytic COLA normalization constant (window sum for M-fold overlap)
   uint32_t ola_read_pos; // next read position in ola_buf
@@ -348,6 +357,8 @@ static void handle_midi(FFTFreeze* self)
       self->fade_dir = FADE_TO_FROZEN;
       self->fade_pos = 0;
     } else if (self->frozen && self->fade_dir != FADE_TO_LIVE
+               // guard above avoids restarting the fade-out on a second
+               // note-off/CC arriving in the same MIDI block
                && (is_note_off(msg) || (is_cc_freeze(msg, freeze_cc) == false
                && (msg[0] & 0xF0u) == 0xB0u && msg[1] == freeze_cc))) {
       self->fade_dir = FADE_TO_LIVE;
@@ -410,6 +421,9 @@ static void run(LV2_Handle instance, uint32_t n_samples)
         const FadeDir finished = self->fade_dir;
         self->fade_dir = FADE_NONE;
         self->fade_pos = 0;
+        // self->frozen stays true for the whole FADE_TO_LIVE fade so the
+        // block above keeps generating frozen samples to blend against;
+        // only drop it once the crossfade to live has fully completed.
         if (finished == FADE_TO_LIVE) self->frozen = false;
       }
     }
