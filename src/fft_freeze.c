@@ -92,6 +92,8 @@ typedef struct {
   double* prev_phase;// phase of the hop-earlier capture frame (for true_inc estimation)
   double* true_inc;  // true phase increment per hop, per bin (estimated from signal)
   double* jitter;    // slow per-bin random-walk added to true_inc each hop
+  bool*    is_peak;   // scratch: local-magnitude-peak flag, for identity phase locking
+  int32_t* peak_idx;  // scratch: nearest peak bin index, for identity phase locking
 
   // Overlap-add output. A new frame is generated exactly when hop_counter
   // wraps to 0, written starting at the current ola_read_pos — so each
@@ -136,6 +138,8 @@ static void realloc_fft(FFTFreeze* self, uint32_t new_size)
   free(self->prev_phase);
   free(self->true_inc);
   free(self->jitter);
+  free(self->is_peak);
+  free(self->peak_idx);
   free(self->input_ring);
   free(self->ola_buf);
   fftw_free(self->spec);
@@ -152,6 +156,8 @@ static void realloc_fft(FFTFreeze* self, uint32_t new_size)
   self->prev_phase = (double*)calloc(self->fft_size/2 + 1,   sizeof(double));
   self->true_inc   = (double*)calloc(self->fft_size/2 + 1,   sizeof(double));
   self->jitter     = (double*)calloc(self->fft_size/2 + 1,   sizeof(double));
+  self->is_peak    = (bool*)calloc(self->fft_size/2 + 1,     sizeof(bool));
+  self->peak_idx   = (int32_t*)calloc(self->fft_size/2 + 1,  sizeof(int32_t));
   // Ring buffer holds 2×fft_size samples so capture_freeze can access a few hops of history
   self->input_ring = (double*)calloc(self->fft_size * 2,     sizeof(double));
   self->ola_buf    = (double*)calloc(self->fft_size,         sizeof(double));
@@ -299,6 +305,44 @@ static void capture_freeze(FFTFreeze* self)
     dev -= 2.0 * M_PI * round(dev / (2.0 * M_PI));
     // Fall back to nominal for near-silence bins where phase is unreliable
     self->true_inc[k] = (self->mags[k] > 1e-10) ? nominal + dev : nominal;
+  }
+
+  // --- Identity phase locking ---
+  // A single real partial leaks across several neighbouring bins (window
+  // sidelobes), and each leakage bin above independently estimates its own
+  // noisy "true" frequency for what is physically the same partial.
+  // Resynthesizing them independently lets them drift apart in relative
+  // phase over time, producing an audible slow beating/warble. Locking every
+  // non-peak bin to its nearest local-magnitude-peak's true_inc keeps a
+  // whole spectral lobe moving coherently, eliminating the beat.
+  if (!spectral) {
+    for (uint32_t k = 0; k < K; ++k) {
+      bool left_ok  = (k == 0)     || self->mags[k] >= self->mags[k-1];
+      bool right_ok = (k == K - 1) || self->mags[k] >= self->mags[k+1];
+      self->is_peak[k] = left_ok && right_ok;
+    }
+
+    int32_t last_peak = -1;
+    for (uint32_t k = 0; k < K; ++k) {
+      if (self->is_peak[k]) last_peak = (int32_t)k;
+      self->peak_idx[k] = last_peak;
+    }
+    int32_t next_peak = -1;
+    for (int32_t k = (int32_t)K - 1; k >= 0; --k) {
+      if (self->is_peak[k]) next_peak = k;
+      int32_t left  = self->peak_idx[k];
+      int32_t right = next_peak;
+      int32_t chosen;
+      if (left < 0) chosen = right;
+      else if (right < 0) chosen = left;
+      else chosen = ((k - left) <= (right - k)) ? left : right;
+      self->peak_idx[k] = chosen;
+    }
+
+    for (uint32_t k = 0; k < K; ++k) {
+      if (!self->is_peak[k] && self->peak_idx[k] >= 0)
+        self->true_inc[k] = self->true_inc[(uint32_t)self->peak_idx[k]];
+    }
   }
 
   // Reset OLA state
@@ -450,6 +494,8 @@ static void cleanup(LV2_Handle instance)
   free(self->prev_phase);
   free(self->true_inc);
   free(self->jitter);
+  free(self->is_peak);
+  free(self->peak_idx);
   free(self->input_ring);
   free(self->ola_buf);
   free(self);
