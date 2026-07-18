@@ -207,7 +207,7 @@ static LV2_Handle instantiate(const LV2_Descriptor*     descriptor,
   if (!self->map) { free(self); return NULL; }
 
   map_uris(self);
-  realloc_fft(self, 1024);
+  realloc_fft(self, 4096);
 
   // 5ms crossfade between live and frozen output on freeze engage/disengage
   self->fade_len = (uint32_t)(0.005 * rate);

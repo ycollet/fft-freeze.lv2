@@ -32,7 +32,7 @@ CPATH="$(brew --prefix fftw)/include" LIBRARY_PATH="$(brew --prefix fftw)/lib" m
 | `in_l` / `out_l`    | Audio        | Mono audio in/out                                                            |
 | `midi_in`           | MIDI         | Note On/Off and/or CC messages trigger freeze/unfreeze                      |
 | `freeze_on_note`    | Control      | Enables MIDI-triggered freeze (toggle)                                      |
-| `fft_size`          | Control      | FFT window size in samples, 256–8192 (default 1024)                         |
+| `fft_size`          | Control      | FFT window size in samples, 256–8192 (default 4096)                         |
 | `spectral_mode`     | Control      | Randomizes bin phases at capture for a diffuse, texture-like freeze (toggle)|
 | `freeze_cc_number`  | Control      | MIDI CC number that also triggers freeze/unfreeze (default 20)              |
 
